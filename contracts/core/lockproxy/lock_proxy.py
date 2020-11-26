@@ -13,6 +13,8 @@ from ontology.builtins import concat, state, append, remove
 from ontology.libont import bytearray_reverse
 from ontology.interop.System.App import DynamicAppCall
 from ontology.libont import AddressFromVmCode
+from ontology.interop.Ontology.Wasm import InvokeWasm
+
 
 ZERO_ADDRESS = bytearray(b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
 ONT_ADDRESS = bytearray(b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01')
@@ -30,6 +32,7 @@ Operator = Base58ToAddress('AdzZ2VKufdJWeB8t9a8biXoHbbMe2kZeyH')
 
 UnlockEvent = RegisterAction("unlock", "toAssetHash", "toAddress", "amount")
 LockEvent = RegisterAction("lock", "fromAssetHash", "toChainId", "toAssetHash", "fromAddress", "toAddress", "amount")
+InvokeEvent = RegisterAction("invokeContract","contractHash","method","param")
 
 SelfContractAddress = GetExecutingScriptHash()
 
@@ -87,6 +90,14 @@ def Main(operation, args):
         return addFromAssetFromList(fromAssetHash)
     if operation == "getFromAssetHashList":
         return getFromAssetHashList()
+    # new interface for invoke specified contract
+    if operation == "invokeContract":
+        assert(len(args)==3)
+        params = args[0]
+        fromContractAddr = args[1]
+        fromChainId = args[2]
+        return invokeWasmContract(params,fromContractAddr,fromChainId)
+
     if operation == "upgrade":
         assert (len(args) == 7)
         code = args[0]
@@ -191,7 +202,86 @@ def unlock(params, fromContractAddr, fromChainId):
 
     return True
 
+def invokeWasmContract(params, fromContractAddr, fromChainId):
+    """
+    :param params:
+    :return:
+    """
 
+    assert(CheckWitness(CROSS_CHAIN_CONTRACT_ADDRESS))
+    res = _deserializeInvokeArgs(params)
+
+    contractHash = res[0]
+    method = res[1]
+    param = res[2]
+
+    contractAddr = Base58ToAddress(contractHash)
+
+    assert(fromContractAddr == getProxyHash(fromChainId))
+    wasmparam = _buildWasmParam(method,param)
+
+    if InvokeWasm(contractAddr,wasmparam) == b'01':
+        InvokeEvent(contractHash,method,param)        
+        return True
+    else:
+        return False
+
+
+def _buildWasmParam(method,param):
+    magicversion = b'\x00'
+    typebytearray = b'\x00'
+    typestring = b'\x01'
+    typeaddress = b'\x02'
+    typebool = b'\x03'
+    typeint = b'\x04'
+    typeh256 = b'\x05'
+    typelist = b'\x10'   
+
+    lsize = b'\x02\x00\x00\x00'
+    magicversion = concat(magicversion,typelist)
+    magicversion = concat(magicversion,lsize)
+
+    magicversion = concat(magicversion, typestring)
+    magicversion = concat(magicversion, _intTobytes(len(method),4))
+    magicversion = concat(magicversion, method)
+
+    magicversion = concat(magicversion, typebytearray)
+    magicversion = concat(magicversion, _intTobytes(len(typebytearray),4))
+    magicversion = concat(magicversion,param)
+
+    return magicversion
+
+def _intTobytes(i,length):
+    l = len(i)
+    if l >= length:
+        return i
+    return concat(i,_getXZeroes(length - l))
+    
+
+def _getXZeroes(n):
+    if n == 0:
+        return b''
+    else:
+        tmp = b'\x00'
+        for i in range (0 , n -1):
+            tmp = concat(tmp,b'\x00')
+        return tmp
+
+
+def _deserializeInvokeArgs(buff):
+    offset = 0
+    res = NextVarBytes(buff,offset)
+    contactHash = res[0]
+
+    res = NextVarBytes(buff,res[1])
+    method = res[0]
+
+    res = NextVarBytes(buff,res[1])
+    param = res[0]
+
+    return [contactHash,method,param]
+
+	
 
 def getBalanceFor(_assetAddress):
     if _assetAddress == ONG_ADDRESS or _assetAddress == ONT_ADDRESS:
